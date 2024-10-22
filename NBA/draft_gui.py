@@ -22,8 +22,8 @@ roster_slots = {
     'SF': 1,
     'PF': 1,
     'C': 1,
-    'G': 1,
-    'F': 1,
+    'G': 1,      # Guard Flex
+    'F': 1,      # Forward Flex
     'UTIL': 3,
     'Bench': 3
 }
@@ -258,6 +258,12 @@ class DraftSimulator(QMainWindow):
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_panel.addWidget(self.canvas)
 
+        # Position Recommendation Label (Added to fix the error)
+        self.position_recommendation_label = QLabel("Next Recommended Position: ")
+        self.position_recommendation_label.setFont(QFont("Arial", 12))
+        self.position_recommendation_label.setStyleSheet("color: #FFA500;")  # Orange color
+        right_panel.addWidget(self.position_recommendation_label)
+
         main_layout.addLayout(right_panel, 40)
 
     def update_player_table(self):
@@ -266,9 +272,22 @@ class DraftSimulator(QMainWindow):
         if filter_pos == "All":
             filtered_players = self.available_players
         else:
-            filtered_players = self.available_players[
-                self.available_players['Position List'].apply(lambda x: filter_pos in x)
-            ]
+            # Adjust filter logic for flex positions
+            if filter_pos == 'G':
+                # G can be PG or SG
+                filtered_players = self.available_players[
+                    self.available_players['Position List'].apply(lambda x: 'PG' in x or 'SG' in x)
+                ]
+            elif filter_pos == 'F':
+                # F can be SF or PF
+                filtered_players = self.available_players[
+                    self.available_players['Position List'].apply(lambda x: 'SF' in x or 'PF' in x)
+                ]
+            else:
+                # For other specific positions (PG, SG, SF, PF, C)
+                filtered_players = self.available_players[
+                    self.available_players['Position List'].apply(lambda x: filter_pos in x)
+                ]
         if search_text:
             filtered_players = filtered_players[
                 filtered_players['Player'].str.lower().str.contains(search_text)
@@ -281,12 +300,14 @@ class DraftSimulator(QMainWindow):
             team_item = QTableWidgetItem(player['Team'])
             position_item = QTableWidgetItem(', '.join(player['Position List']))
             tier_item = QTableWidgetItem(str(player['Tier']))
-            vorp_item = QTableWidgetItem(str(player['Adjusted VORP']))
-            fp_item = QTableWidgetItem(str(player['Projected Fantasy Points']))
+            vorp_item = QTableWidgetItem(f"{player['Adjusted VORP']:.2f}")
+            fp_item = QTableWidgetItem(f"{player['Projected Fantasy Points']:.2f}")
+            ft_item = QTableWidgetItem(f"{player['Fantasy TOT']:.2f}")
+            fp_avg_item = QTableWidgetItem(f"{player['Fantasy AVG']:.2f}")
 
             # Highlight top 10 players based on Adjusted VORP
             if row_idx < 10:
-                for item in [player_item, team_item, position_item, tier_item, vorp_item, fp_item]:
+                for item in [player_item, team_item, position_item, tier_item, vorp_item, fp_item, ft_item, fp_avg_item]:
                     item.setBackground(QBrush(QColor(255, 215, 0, 100)))  # Light Gold
 
             self.player_table.setItem(row_idx, 0, player_item)
@@ -295,6 +316,8 @@ class DraftSimulator(QMainWindow):
             self.player_table.setItem(row_idx, 3, tier_item)
             self.player_table.setItem(row_idx, 4, vorp_item)
             self.player_table.setItem(row_idx, 5, fp_item)
+            self.player_table.setItem(row_idx, 6, ft_item)
+            self.player_table.setItem(row_idx, 7, fp_avg_item)
 
         self.player_table.resizeColumnsToContents()
 
@@ -352,28 +375,32 @@ class DraftSimulator(QMainWindow):
         sorted_positions = sorted(needed_positions, key=lambda pos: position_values.get(pos, 0), reverse=True)
 
         for pos in sorted_positions:
-            if pos in player_positions and len(team_roster[pos]) < roster_slots[pos]:
-                team_roster[pos].append(player_name)
-                assigned = True
-                break
-            # Assign to G slot if eligible and needed
-            if pos == 'G' and any(p in ['PG', 'SG'] for p in player_positions) and len(team_rosters[team_num]['G']) < roster_slots['G']:
-                team_roster['G'].append(player_name)
-                assigned = True
-                break
-            # Assign to F slot if eligible and needed
-            if pos == 'F' and any(p in ['SF', 'PF'] for p in player_positions) and len(team_rosters[team_num]['F']) < roster_slots['F']:
-                team_roster['F'].append(player_name)
-                assigned = True
-                break
+            # Direct assignment for specific positions
+            if pos in ['PG', 'SG', 'SF', 'PF', 'C']:
+                if pos in player_positions and len(team_roster[pos]) < roster_slots[pos]:
+                    team_roster[pos].append(player_name)
+                    assigned = True
+                    break
+            elif pos == 'G':
+                # Guard Flex: Assign if player is PG or SG
+                if any(p in ['PG', 'SG'] for p in player_positions) and len(team_roster['G']) < roster_slots['G']:
+                    team_roster['G'].append(player_name)
+                    assigned = True
+                    break
+            elif pos == 'F':
+                # Forward Flex: Assign if player is SF or PF
+                if any(p in ['SF', 'PF'] for p in player_positions) and len(team_roster['F']) < roster_slots['F']:
+                    team_roster['F'].append(player_name)
+                    assigned = True
+                    break
+            elif pos == 'UTIL':
+                # UTIL can accept any position
+                if len(team_roster['UTIL']) < roster_slots['UTIL']:
+                    team_roster['UTIL'].append(player_name)
+                    assigned = True
+                    break
 
-        # Assign to UTIL slot if eligible and needed
-        if not assigned:
-            if 'UTIL' in needed_positions and len(team_roster['UTIL']) < roster_slots['UTIL']:
-                team_roster['UTIL'].append(player_name)
-                assigned = True
-
-        # Assign to Bench if still not assigned
+        # If not assigned yet, assign to Bench prioritizing higher Adjusted VORP
         if not assigned:
             if len(team_roster['Bench']) < roster_slots['Bench']:
                 team_roster['Bench'].append(player_name)
@@ -547,7 +574,7 @@ class DraftSimulator(QMainWindow):
             self.top_three_recommendations.addItem(item)
             return
 
-        # Calculate combined scores based on VORP and scarcity
+        # Calculate combined scores based on Adjusted VORP and scarcity
         position_values = self.calculate_position_values(self.user_draft_position)
         scarcity = {pos: self.calculate_scarcity(pos) for pos in needed_positions}
         combined_scores = {pos: position_values.get(pos, 0) * scarcity.get(pos, 1) for pos in needed_positions}

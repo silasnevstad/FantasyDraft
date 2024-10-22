@@ -55,7 +55,10 @@ data[['Team', 'Position']] = data[['Team', 'Position']].fillna('')
 
 # Parse positions into a list
 def parse_positions(pos_str):
-    positions = pos_str.split(', ')
+    if pos_str:
+        positions = pos_str.split(', ')
+    else:
+        positions = []
     return positions
 
 data['Position List'] = data['Position'].apply(parse_positions)
@@ -102,8 +105,8 @@ roster_slots = {
     'SF': 1,
     'PF': 1,
     'C': 1,
-    'G': 1,
-    'F': 1,
+    'G': 1,      # Guard Flex
+    'F': 1,      # Forward Flex
     'UTIL': 3,
     'Bench': 3
 }
