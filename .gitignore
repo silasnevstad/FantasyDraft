@@ -1,3 +1,5 @@
 .DS_Store
 .idea/
 
+NBA/__pycache__/
+NBA/draft_state.pkl

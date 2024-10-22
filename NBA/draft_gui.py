@@ -1,9 +1,5 @@
 import sys
 import os
-import pickle
-import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QTableWidget, QTableWidgetItem, QMessageBox,
@@ -11,38 +7,31 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont, QColor, QBrush
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 
-# File name for saving the draft state
-STATE_FILE = 'draft_state.pkl'
+from data_loader import DataLoader
+from draft_logic import DraftLogic, STATE_FILE
 
-# Roster slots based on league settings
-roster_slots = {
-    'PG': 1,
-    'SG': 1,
-    'SF': 1,
-    'PF': 1,
-    'C': 1,
-    'G': 1,      # Guard Flex
-    'F': 1,      # Forward Flex
-    'UTIL': 3,
-    'Bench': 3
-}
 
 class DraftSimulator(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.available_players = None
         self.setWindowTitle("Fantasy Draft Simulator")
         self.setGeometry(100, 100, 1800, 1000)
 
-        # Load data
-        self.load_data()
+        # Initialize DataLoader and load data
+        self.data_loader = DataLoader()
+        self.data = self.data_loader.load_data()
 
-        # Initialize draft state
-        self.initialize_draft_state()
+        # Initialize DraftLogic
+        self.logic = DraftLogic(self.data)
 
         # Setup UI
         self.setup_ui()
+
+        # Initialize draft state
+        self.initialize_draft_state()
 
         # Update UI elements
         self.update_player_table()
@@ -52,30 +41,12 @@ class DraftSimulator(QMainWindow):
         self.update_current_pick_label()
         self.update_positional_requirements_chart()
         self.update_top_three_recommendations()
-
-    def load_data(self):
-        try:
-            if not os.path.exists('cleaned_players_data.csv'):
-                raise FileNotFoundError("The file 'cleaned_players_data.csv' does not exist.")
-            self.data = pd.read_csv('cleaned_players_data.csv')
-            required_columns = {'Player', 'Team', 'Position List', 'Tier', 'Adjusted VORP', 'Projected Fantasy Points'}
-            if not required_columns.issubset(set(self.data.columns)):
-                missing = required_columns - set(self.data.columns)
-                raise ValueError(f"Missing columns in data: {', '.join(missing)}")
-            self.data['Position List'] = self.data['Position List'].apply(lambda x: eval(x) if isinstance(x, str) else x)
-            self.data = self.data.sort_values(by='Adjusted VORP', ascending=False).reset_index(drop=True)
-            self.available_players = self.data.copy()
-        except FileNotFoundError as e:
-            QMessageBox.critical(self, "Error", f"Error: {str(e)}")
-            sys.exit(1)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"An error occurred while loading data: {str(e)}")
-            sys.exit(1)
+        self.update_recommendations_pie_chart()
 
     def initialize_draft_state(self):
-        self.num_teams = 12
-        self.num_rounds = 13
-
+        """
+        Initialize the draft state by loading existing state or setting up a new draft.
+        """
         if os.path.exists(STATE_FILE):
             choice = QMessageBox.question(
                 self, "Resume Draft",
@@ -84,15 +55,9 @@ class DraftSimulator(QMainWindow):
             )
             if choice == QMessageBox.Yes:
                 try:
-                    with open(STATE_FILE, 'rb') as f:
-                        saved_state = pickle.load(f)
-                    self.available_players = saved_state['available_players']
-                    self.team_rosters = saved_state['team_rosters']
-                    self.user_draft_position = saved_state['user_draft_position']
-                    self.draft_picks = saved_state['draft_picks']
-                    self.current_pick_index = saved_state['current_pick_index']
-                except Exception as e:
-                    QMessageBox.warning(self, "Error", f"Failed to load saved draft state: {str(e)}")
+                    self.logic.load_existing_draft_state()
+                except:
+                    QMessageBox.warning(self, "Error", "Failed to load saved draft state. Starting a new draft.")
                     self.setup_new_draft()
             else:
                 try:
@@ -104,33 +69,26 @@ class DraftSimulator(QMainWindow):
             self.setup_new_draft()
 
     def setup_new_draft(self):
+        """
+        Prompt the user to enter their draft position and initialize a new draft.
+        """
         while True:
             draft_position, ok = QInputDialog.getInt(
-                self, "Draft Position", f"Enter your draft position (1-{self.num_teams}):", 1, 1, self.num_teams, 1
+                self, "Draft Position",
+                f"Enter your draft position (1-{self.logic.num_teams}):", 1, 1, self.logic.num_teams, 1
             )
             if not ok:
                 sys.exit(0)
-            if 1 <= draft_position <= self.num_teams:
-                self.user_draft_position = draft_position
+            if 1 <= draft_position <= self.logic.num_teams:
+                self.logic.initialize_new_draft(draft_position)
                 break
             else:
-                QMessageBox.warning(self, "Invalid Input", f"Please enter a number between 1 and {self.num_teams}.")
-
-        # Generate draft order (snake draft)
-        draft_order = []
-        for round_num in range(self.num_rounds):
-            if round_num % 2 == 0:
-                picks = list(range(1, self.num_teams + 1))
-            else:
-                picks = list(range(self.num_teams, 0, -1))
-            draft_order.extend(picks)
-        # Create a list of tuples (pick_number, team_number)
-        self.draft_picks = list(enumerate(draft_order, start=1))
-        # Initialize team rosters (including other teams)
-        self.team_rosters = {team_num: {position: [] for position in roster_slots.keys()} for team_num in range(1, self.num_teams + 1)}
-        self.current_pick_index = 0
+                QMessageBox.warning(self, "Invalid Input", f"Please enter a number between 1 and {self.logic.num_teams}.")
 
     def setup_ui(self):
+        """
+        Set up the user interface components.
+        """
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
@@ -160,7 +118,7 @@ class DraftSimulator(QMainWindow):
         filter_label = QLabel("Filter by Position:")
         self.position_filter = QComboBox()
         self.position_filter.addItem("All")
-        for pos in roster_slots.keys():
+        for pos in self.logic.roster_slots.keys():
             self.position_filter.addItem(pos)
         self.position_filter.currentIndexChanged.connect(self.update_player_table)
         filter_layout.addWidget(filter_label)
@@ -169,13 +127,16 @@ class DraftSimulator(QMainWindow):
 
         # Player table
         self.player_table = QTableWidget()
-        self.player_table.setColumnCount(6)
-        self.player_table.setHorizontalHeaderLabels(['Player', 'Team', 'Position', 'Tier', 'Adjusted VORP', 'Projected FP'])
+        self.player_table.setColumnCount(9)  # Updated to 9 columns (Added Combined Score)
+        self.player_table.setHorizontalHeaderLabels(
+            ['PlayerID', 'Player', 'Team', 'Position', 'Tier', 'Adjusted VORP', 'Projected FP', 'Fantasy AVG', 'Combined Score']
+        )
         self.player_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.player_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.player_table.setSelectionMode(QTableWidget.SingleSelection)
         self.player_table.setStyleSheet("alternate-background-color: #f0f0f0;")
         self.player_table.setSortingEnabled(True)  # Enable sorting
+        self.player_table.hideColumn(0)  # Hide PlayerID column
         left_panel.addWidget(self.player_table)
 
         # Pick button
@@ -211,7 +172,7 @@ class DraftSimulator(QMainWindow):
                 background-color: #007BB5;
             }
         """)
-        self.save_button.clicked.connect(self.save_draft_state)
+        self.save_button.clicked.connect(self.logic.save_draft_state)
         left_panel.addWidget(self.save_button)
 
         main_layout.addLayout(left_panel, 60)
@@ -224,6 +185,13 @@ class DraftSimulator(QMainWindow):
         self.current_pick_label.setFont(QFont("Arial", 16, QFont.Bold))
         self.current_pick_label.setStyleSheet("color: #FFD700;")  # Gold color for prominence
         right_panel.addWidget(self.current_pick_label)
+
+        # Indicate if calculation is in progress
+        self.calculation_label = QLabel("Calculating Metrics...")
+        self.calculation_label.setFont(QFont("Arial", 14))
+        self.calculation_label.setStyleSheet("color: #FF0000;")  # Red color
+        self.calculation_label.hide()  # Hide initially
+        right_panel.addWidget(self.calculation_label)
 
         # Your Roster
         roster_label = QLabel("Your Current Roster:")
@@ -253,41 +221,63 @@ class DraftSimulator(QMainWindow):
         chart_label = QLabel("Positional Requirements:")
         chart_label.setFont(QFont("Arial", 14, QFont.Bold))
         right_panel.addWidget(chart_label)
-        self.figure, self.ax = plt.subplots(figsize=(6,5))
+        self.figure, self.ax = plt.subplots(figsize=(6, 5))
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         right_panel.addWidget(self.canvas)
 
-        # Position Recommendation Label (Added to fix the error)
+        # Top Three Recommendations Pie Chart
+        pie_chart_label = QLabel("Top 3 Recommendations Pie Chart:")
+        pie_chart_label.setFont(QFont("Arial", 14, QFont.Bold))
+        right_panel.addWidget(pie_chart_label)
+        self.pie_figure, self.pie_ax = plt.subplots(figsize=(4, 4))
+        self.pie_canvas = FigureCanvas(self.pie_figure)
+        self.pie_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right_panel.addWidget(self.pie_canvas)
+
+        # Position Recommendation Label
         self.position_recommendation_label = QLabel("Next Recommended Position: ")
         self.position_recommendation_label.setFont(QFont("Arial", 12))
         self.position_recommendation_label.setStyleSheet("color: #FFA500;")  # Orange color
         right_panel.addWidget(self.position_recommendation_label)
 
+        # Best Projected Picks Section
+        best_picks_label = QLabel("Best Projected Picks:")
+        best_picks_label.setFont(QFont("Arial", 14, QFont.Bold))
+        right_panel.addWidget(best_picks_label)
+        self.best_picks_list = QListWidget()
+        self.best_picks_list.setStyleSheet("background-color: #3C3C3C; color: #FFFFFF;")
+        right_panel.addWidget(self.best_picks_list)
+
         main_layout.addLayout(right_panel, 40)
 
     def update_player_table(self):
+        """
+        Update the player table based on current filters and search criteria.
+        """
         filter_pos = self.position_filter.currentText()
         search_text = self.search_bar.text().lower()
+
         if filter_pos == "All":
-            filtered_players = self.available_players
+            filtered_players = self.logic.available_players
         else:
             # Adjust filter logic for flex positions
             if filter_pos == 'G':
                 # G can be PG or SG
-                filtered_players = self.available_players[
-                    self.available_players['Position List'].apply(lambda x: 'PG' in x or 'SG' in x)
+                filtered_players = self.logic.available_players[
+                    self.logic.available_players['Position List'].apply(lambda x: 'PG' in x or 'SG' in x)
                 ]
             elif filter_pos == 'F':
                 # F can be SF or PF
-                filtered_players = self.available_players[
-                    self.available_players['Position List'].apply(lambda x: 'SF' in x or 'PF' in x)
+                filtered_players = self.logic.available_players[
+                    self.logic.available_players['Position List'].apply(lambda x: 'SF' in x or 'PF' in x)
                 ]
             else:
                 # For other specific positions (PG, SG, SF, PF, C)
-                filtered_players = self.available_players[
-                    self.available_players['Position List'].apply(lambda x: filter_pos in x)
+                filtered_players = self.logic.available_players[
+                    self.logic.available_players['Position List'].apply(lambda x: filter_pos in x)
                 ]
+
         if search_text:
             filtered_players = filtered_players[
                 filtered_players['Player'].str.lower().str.contains(search_text)
@@ -296,138 +286,105 @@ class DraftSimulator(QMainWindow):
         self.player_table.setRowCount(len(filtered_players))
 
         for row_idx, (_, player) in enumerate(filtered_players.iterrows()):
-            player_item = QTableWidgetItem(player['Player'])
+            player_id_item = QTableWidgetItem(str(player['PlayerID']))
+            player_name_item = QTableWidgetItem(player['Player'])
             team_item = QTableWidgetItem(player['Team'])
             position_item = QTableWidgetItem(', '.join(player['Position List']))
             tier_item = QTableWidgetItem(str(player['Tier']))
             vorp_item = QTableWidgetItem(f"{player['Adjusted VORP']:.2f}")
             fp_item = QTableWidgetItem(f"{player['Projected Fantasy Points']:.2f}")
-            ft_item = QTableWidgetItem(f"{player['Fantasy TOT']:.2f}")
             fp_avg_item = QTableWidgetItem(f"{player['Fantasy AVG']:.2f}")
+            combined_score_item = QTableWidgetItem(f"{player['Combined Score']:.2f}")
 
-            # Highlight top 10 players based on Adjusted VORP
+            # Highlight top 10 players based on Combined Score
             if row_idx < 10:
-                for item in [player_item, team_item, position_item, tier_item, vorp_item, fp_item, ft_item, fp_avg_item]:
+                for item in [player_id_item, player_name_item, team_item, position_item, tier_item, vorp_item, fp_item, fp_avg_item, combined_score_item]:
                     item.setBackground(QBrush(QColor(255, 215, 0, 100)))  # Light Gold
 
-            self.player_table.setItem(row_idx, 0, player_item)
-            self.player_table.setItem(row_idx, 1, team_item)
-            self.player_table.setItem(row_idx, 2, position_item)
-            self.player_table.setItem(row_idx, 3, tier_item)
-            self.player_table.setItem(row_idx, 4, vorp_item)
-            self.player_table.setItem(row_idx, 5, fp_item)
-            self.player_table.setItem(row_idx, 6, ft_item)
+            self.player_table.setItem(row_idx, 0, player_id_item)
+            self.player_table.setItem(row_idx, 1, player_name_item)
+            self.player_table.setItem(row_idx, 2, team_item)
+            self.player_table.setItem(row_idx, 3, position_item)
+            self.player_table.setItem(row_idx, 4, tier_item)
+            self.player_table.setItem(row_idx, 5, vorp_item)
+            self.player_table.setItem(row_idx, 6, fp_item)
             self.player_table.setItem(row_idx, 7, fp_avg_item)
+            self.player_table.setItem(row_idx, 8, combined_score_item)
 
         self.player_table.resizeColumnsToContents()
 
+        # Update Best Projected Picks based on Combined Score
+        self.update_best_projected_picks()
+
     def handle_pick(self):
-        if self.current_pick_index >= len(self.draft_picks):
+        """
+        Handle the action when the user clicks the 'Pick Selected Player' button.
+        """
+        if self.logic.current_pick_index >= len(self.logic.draft_picks):
             QMessageBox.information(self, "Draft Completed", "All picks have been made.")
             return
 
-        pick_num, team_num = self.draft_picks[self.current_pick_index]
-        round_num = ((pick_num - 1) // self.num_teams) + 1
+        pick_info = self.logic.get_current_pick_info()
+        if not pick_info[0]:
+            QMessageBox.information(self, "Draft Completed", "All picks have been made.")
+            return
+        pick_num, round_num, team_num = pick_info
 
-        selected_items = self.player_table.selectedItems()
-        if not selected_items:
+        selected_row = self.player_table.currentRow()
+        if selected_row == -1:
             QMessageBox.warning(self, "No Selection", "Please select a player to pick.")
             return
 
-        player_name = selected_items[0].text()
-        try:
-            player_row = self.available_players[self.available_players['Player'] == player_name].iloc[0]
-        except IndexError:
-            QMessageBox.warning(self, "Selection Error", "Selected player not found in available players.")
+        player_id_item = self.player_table.item(selected_row, 0)  # Column 0 is PlayerID
+        if not player_id_item:
+            QMessageBox.warning(self, "Selection Error", "Failed to retrieve PlayerID.")
             return
 
-        # Assign player to the current pick's team
-        self.assign_player_to_roster(player_row, self.team_rosters[team_num], team_num)
+        try:
+            player_id = int(player_id_item.text())
+        except ValueError:
+            QMessageBox.warning(self, "Selection Error", "Invalid PlayerID.")
+            return
 
-        # Remove the player from available players
-        self.available_players = self.available_players[self.available_players['Player'] != player_name].reset_index(drop=True)
+        try:
+            self.logic.pick_player(player_id, team_num)
+        except ValueError as e:
+            QMessageBox.warning(self, "Selection Error", str(e))
+            return
 
         # Update UI elements
         self.update_player_table()
         self.update_roster_display()
         self.update_other_rosters_display()
         self.update_position_recommendation()
-        self.current_pick_index += 1
         self.update_current_pick_label()
         self.update_positional_requirements_chart()
         self.update_top_three_recommendations()
-        self.save_draft_state()
+        self.update_recommendations_pie_chart()
 
         # Auto-recommend next pick if it's the user's turn
-        if team_num == self.user_draft_position:
+        if team_num == self.logic.user_draft_position:
             self.auto_recommend_pick()
 
-    def assign_player_to_roster(self, player_row, team_roster, team_num):
-        player_name = player_row['Player']
-        player_positions = player_row['Position List']
-        needed_positions = self.positions_needed(team_roster)
-        assigned = False
-
-        # Calculate position values for the team
-        position_values = self.calculate_position_values(team_num)
-
-        # Sort needed positions based on their calculated value
-        sorted_positions = sorted(needed_positions, key=lambda pos: position_values.get(pos, 0), reverse=True)
-
-        for pos in sorted_positions:
-            # Direct assignment for specific positions
-            if pos in ['PG', 'SG', 'SF', 'PF', 'C']:
-                if pos in player_positions and len(team_roster[pos]) < roster_slots[pos]:
-                    team_roster[pos].append(player_name)
-                    assigned = True
-                    break
-            elif pos == 'G':
-                # Guard Flex: Assign if player is PG or SG
-                if any(p in ['PG', 'SG'] for p in player_positions) and len(team_roster['G']) < roster_slots['G']:
-                    team_roster['G'].append(player_name)
-                    assigned = True
-                    break
-            elif pos == 'F':
-                # Forward Flex: Assign if player is SF or PF
-                if any(p in ['SF', 'PF'] for p in player_positions) and len(team_roster['F']) < roster_slots['F']:
-                    team_roster['F'].append(player_name)
-                    assigned = True
-                    break
-            elif pos == 'UTIL':
-                # UTIL can accept any position
-                if len(team_roster['UTIL']) < roster_slots['UTIL']:
-                    team_roster['UTIL'].append(player_name)
-                    assigned = True
-                    break
-
-        # If not assigned yet, assign to Bench prioritizing higher Adjusted VORP
-        if not assigned:
-            if len(team_roster['Bench']) < roster_slots['Bench']:
-                team_roster['Bench'].append(player_name)
-                assigned = True
-            else:
-                QMessageBox.warning(self, "Roster Full", f"No available roster spot to assign {player_name}. Player remains undrafted.")
-
-    def positions_needed(self, team_roster):
-        needed_positions = []
-        for position, limit in roster_slots.items():
-            filled = len(team_roster[position])
-            if filled < limit:
-                needed_positions.append(position)
-        return needed_positions
-
     def update_roster_display(self):
+        """
+        Update the display of the user's roster.
+        """
         self.roster_list.clear()
-        user_roster = self.team_rosters[self.user_draft_position]
+        user_roster = self.logic.get_team_roster(self.logic.user_draft_position)
         for position, players in user_roster.items():
             players_str = ', '.join(players) if players else 'None'
             item = QListWidgetItem(f"{position}: {players_str}")
             self.roster_list.addItem(item)
 
     def update_other_rosters_display(self):
+        """
+        Update the display of other teams' rosters.
+        """
         self.other_rosters_list.clear()
-        for team_num, roster in self.team_rosters.items():
-            if team_num == self.user_draft_position:
+        all_rosters = self.logic.get_all_rosters()
+        for team_num, roster in all_rosters.items():
+            if team_num == self.logic.user_draft_position:
                 continue  # Skip your own team
             roster_items = []
             for pos, players in roster.items():
@@ -438,126 +395,73 @@ class DraftSimulator(QMainWindow):
             self.other_rosters_list.addItem(item)
 
     def update_position_recommendation(self):
-        user_roster = self.team_rosters[self.user_draft_position]
-        needed_positions = self.positions_needed(user_roster)
-        if not needed_positions:
-            recommendation = "No positions needed."
-        else:
-            # Recommend positions based on value over replacement and scarcity
-            position_values = self.calculate_position_values(self.user_draft_position)
-            # Calculate scarcity: lower available players means higher scarcity
-            scarcity = {pos: self.calculate_scarcity(pos) for pos in needed_positions}
-            # Combine value and scarcity
-            combined_scores = {pos: position_values.get(pos, 0) * scarcity.get(pos, 1) for pos in needed_positions}
-            # Get top recommendation
-            top_position = max(combined_scores, key=combined_scores.get)
-            recommendation = f"Next Recommended Position: {top_position}"
+        """
+        Update the next recommended position to draft.
+        """
+        recommendation = self.logic.get_position_recommendation()
         self.position_recommendation_label.setText(recommendation)
 
-    def calculate_position_values(self, team_num):
-        # Calculate the highest Adjusted VORP available for each needed position
-        team_roster = self.team_rosters[team_num]
-        position_values = {}
-        for pos in roster_slots.keys():
-            if len(team_roster[pos]) >= roster_slots[pos]:
-                continue  # Position already filled
-            if pos == 'G':
-                filtered = self.available_players[self.available_players['Position List'].apply(lambda x: 'PG' in x or 'SG' in x)]
-            elif pos == 'F':
-                filtered = self.available_players[self.available_players['Position List'].apply(lambda x: 'SF' in x or 'PF' in x)]
-            else:
-                filtered = self.available_players[self.available_players['Position List'].apply(lambda x: pos in x)]
-            if not filtered.empty:
-                position_values[pos] = filtered['Adjusted VORP'].max()
-            else:
-                position_values[pos] = 0
-        return position_values
-
-    def calculate_scarcity(self, position):
-        # Scarcity is inversely proportional to the number of available players
-        if position == 'G':
-            count = self.available_players[self.available_players['Position List'].apply(lambda x: 'PG' in x or 'SG' in x)].shape[0]
-        elif position == 'F':
-            count = self.available_players[self.available_players['Position List'].apply(lambda x: 'SF' in x or 'PF' in x)].shape[0]
-        else:
-            count = self.available_players[self.available_players['Position List'].apply(lambda x: position in x)].shape[0]
-        return 1 / count if count > 0 else 0
-
     def update_current_pick_label(self):
-        if self.current_pick_index < len(self.draft_picks):
-            pick_num, team_num = self.draft_picks[self.current_pick_index]
-            round_num = ((pick_num - 1) // self.num_teams) + 1
-            if team_num == self.user_draft_position:
-                pick_info = f"Pick #{pick_num} (Round {round_num}) - Your Pick"
+        """
+        Update the label showing the current pick information.
+        """
+        pick_info = self.logic.get_current_pick_info()
+        if pick_info[0]:
+            pick_num, round_num, team_num = pick_info
+            if team_num == self.logic.user_draft_position:
+                pick_details = f"Pick #{pick_num} (Round {round_num}) - Your Pick"
                 color = "#FFD700"  # Gold
             else:
-                pick_info = f"Pick #{pick_num} (Round {round_num}) - Team {team_num}'s Pick"
+                pick_details = f"Pick #{pick_num} (Round {round_num}) - Team {team_num}'s Pick"
                 color = "#FFFFFF"  # White
-            self.current_pick_label.setText(f"Current Pick: {pick_info}")
+            self.current_pick_label.setText(f"Current Pick: {pick_details}")
             self.current_pick_label.setStyleSheet(f"color: {color};")
         else:
             self.current_pick_label.setText("Draft Completed")
             self.current_pick_label.setStyleSheet("color: #FF0000;")  # Red
 
-    def save_draft_state(self):
-        draft_state = {
-            'available_players': self.available_players,
-            'team_rosters': self.team_rosters,
-            'user_draft_position': self.user_draft_position,
-            'current_pick_index': self.current_pick_index,
-            'draft_picks': self.draft_picks,
-        }
-        try:
-            with open(STATE_FILE, 'wb') as f:
-                pickle.dump(draft_state, f)
-        except Exception as e:
-            QMessageBox.warning(self, "Save Error", f"Failed to save draft state: {str(e)}")
-
-    def closeEvent(self, event):
-        reply = QMessageBox.question(
-            self, 'Quit', 'Do you want to save the draft before exiting?',
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes
-        )
-        if reply == QMessageBox.Yes:
-            self.save_draft_state()
-            event.accept()
-        elif reply == QMessageBox.No:
-            event.accept()
-        else:
-            event.ignore()
-
     def update_positional_requirements_chart(self):
+        """
+        Update the positional requirements chart based on needed positions and available players.
+        """
+        # Clear the previous plot
+        self.ax.clear()
+
         # Calculate needed positions
-        user_roster = self.team_rosters[self.user_draft_position]
-        needed_positions = self.positions_needed(user_roster)
+        user_roster = self.logic.get_team_roster(self.logic.user_draft_position)
+        needed_positions = self.logic.positions_needed(user_roster)
 
         # Count needed per position
-        needed_counts = {pos: roster_slots[pos] - len(user_roster[pos]) for pos in needed_positions}
+        needed_counts = {pos: self.logic.roster_slots[pos] - len(user_roster[pos]) for pos in needed_positions}
 
         # Count available players per position
         available_counts = {}
         for pos in needed_positions:
             if pos == 'G':
-                count = self.available_players[self.available_players['Position List'].apply(lambda x: 'PG' in x or 'SG' in x)].shape[0]
+                count = self.logic.available_players[
+                    self.logic.available_players['Position List'].apply(lambda x: 'PG' in x or 'SG' in x)
+                ].shape[0]
             elif pos == 'F':
-                count = self.available_players[self.available_players['Position List'].apply(lambda x: 'SF' in x or 'PF' in x)].shape[0]
+                count = self.logic.available_players[
+                    self.logic.available_players['Position List'].apply(lambda x: 'SF' in x or 'PF' in x)
+                ].shape[0]
             else:
-                count = self.available_players[self.available_players['Position List'].apply(lambda x: pos in x)].shape[0]
+                count = self.logic.available_players[
+                    self.logic.available_players['Position List'].apply(lambda x: pos in x)
+                ].shape[0]
             available_counts[pos] = count
 
-        # Clear the previous plot
-        self.ax.clear()
-
-        positions = list(needed_counts.keys())
+        positions_plot = list(needed_counts.keys())
         needed = list(needed_counts.values())
-        available = [available_counts.get(pos, 0) for pos in positions]
+        available = [available_counts.get(pos, 0) for pos in positions_plot]
 
-        x = range(len(positions))
+        x = range(len(positions_plot))
         self.ax.bar(x, needed, width=0.4, label='Needed', align='center', color='#FF6347')  # Tomato color
-        self.ax.bar(x, available, width=0.4, bottom=needed, label='Available', align='center', color='#4682B4')  # SteelBlue color
+        self.ax.bar(x, available, width=0.4, bottom=needed, label='Available', align='center',
+                    color='#4682B4')  # SteelBlue color
 
         self.ax.set_xticks(x)
-        self.ax.set_xticklabels(positions)
+        self.ax.set_xticklabels(positions_plot)
         self.ax.set_ylabel('Number of Players')
         self.ax.set_title('Positional Requirements vs Available Players')
         self.ax.legend()
@@ -566,88 +470,97 @@ class DraftSimulator(QMainWindow):
         self.canvas.draw()
 
     def update_top_three_recommendations(self):
+        """
+        Update the top three position recommendations list.
+        """
         self.top_three_recommendations.clear()
-        user_roster = self.team_rosters[self.user_draft_position]
-        needed_positions = self.positions_needed(user_roster)
-        if not needed_positions:
+        top_three = self.logic.generate_top_three_recommendations()
+        if not top_three:
             item = QListWidgetItem("No positions needed.")
             self.top_three_recommendations.addItem(item)
             return
-
-        # Calculate combined scores based on Adjusted VORP and scarcity
-        position_values = self.calculate_position_values(self.user_draft_position)
-        scarcity = {pos: self.calculate_scarcity(pos) for pos in needed_positions}
-        combined_scores = {pos: position_values.get(pos, 0) * scarcity.get(pos, 1) for pos in needed_positions}
-        # Sort positions based on combined scores
-        sorted_positions = sorted(combined_scores.items(), key=lambda item: item[1], reverse=True)
-        top_three = sorted_positions[:3]
 
         for pos, score in top_three:
             item = QListWidgetItem(f"{pos} (Score: {score:.2f})")
             self.top_three_recommendations.addItem(item)
 
+        # Update the pie chart after updating recommendations
+        self.update_recommendations_pie_chart()
+
+    def update_recommendations_pie_chart(self):
+        """
+        Update the pie chart based on the top three recommendations.
+        """
+        # Get top three recommendations
+        top_three = self.logic.generate_top_three_recommendations()
+        if not top_three:
+            self.pie_ax.clear()
+            self.pie_ax.text(0.5, 0.5, 'No Data', horizontalalignment='center', verticalalignment='center')
+        else:
+            positions_pie, scores_pie = self.logic.generate_recommendations_pie_data(top_three)
+            self.pie_ax.clear()
+            self.pie_ax.pie(scores_pie, labels=positions_pie, autopct='%1.1f%%', startangle=140)
+            self.pie_ax.set_title('Top 3 Recommendations')
+        self.pie_figure.tight_layout()
+        self.pie_canvas.draw()
+
     def auto_recommend_pick(self):
-        # Display a message box with top three recommendations
-        if self.top_three_recommendations.count() == 0:
+        """
+        Automatically recommend a pick to the user via a message box.
+        """
+        top_three = self.logic.generate_top_three_recommendations()
+        if not top_three:
             QMessageBox.information(self, "Recommendation", "No recommendations available.")
             return
-        recommendations = []
-        for index in range(self.top_three_recommendations.count()):
-            recommendations.append(self.top_three_recommendations.item(index).text())
+        recommendations = [f"{pos} (Score: {score:.2f})" for pos, score in top_three]
         rec_text = "\n".join(recommendations)
-        QMessageBox.information(self, "Top 3 Recommendations", f"Based on your team needs and player availability, consider drafting:\n\n{rec_text}")
+        QMessageBox.information(self, "Top 3 Recommendations",
+                                f"Based on your team needs and player availability, consider drafting:\n\n{rec_text}")
 
-def main():
-    app = QApplication(sys.argv)
-    # Apply a stylesheet for better aesthetics
-    app.setStyle("Fusion")
-    stylesheet = """
-        QMainWindow {
-            background-color: #2E2E2E;
-            color: #FFFFFF;
-        }
-        QLabel {
-            color: #FFFFFF;
-        }
-        QListWidget {
-            background-color: #3C3C3C;
-            color: #FFFFFF;
-            border: 1px solid #555555;
-            padding: 5px;
-        }
-        QTableWidget {
-            background-color: #3C3C3C;
-            color: #FFFFFF;
-            gridline-color: #555555;
-        }
-        QHeaderView::section {
-            background-color: #555555;
-            color: #FFFFFF;
-            padding: 6px;
-            border: 1px solid #2E2E2E;
-            font-size: 14px;
-        }
-        QPushButton {
-            font-size: 16px;
-        }
-        QComboBox {
-            background-color: #555555;
-            color: #FFFFFF;
-            padding: 5px;
-            border-radius: 3px;
-        }
-        QLineEdit {
-            background-color: #555555;
-            color: #FFFFFF;
-            padding: 5px;
-            border-radius: 3px;
-        }
-    """
-    app.setStyleSheet(stylesheet)
-    simulator = DraftSimulator()
-    simulator.show()
-    sys.exit(app.exec_())
+    def update_best_projected_picks(self):
+        """
+        Update the Best Projected Picks list based on Combined Score and positional requirements.
+        """
+        self.best_picks_list.clear()
+        user_roster = self.logic.get_team_roster(self.logic.user_draft_position)
+        needed_positions = self.logic.positions_needed(user_roster)
 
+        if not needed_positions:
+            item = QListWidgetItem("No positions needed.")
+            self.best_picks_list.addItem(item)
+            return
 
-if __name__ == '__main__':
-    main()
+        # Filter players who fit into any needed position
+        def fits_needed(pos_list):
+            return any(pos in pos_list for pos in needed_positions)
+
+        best_picks = self.logic.available_players[
+            self.logic.available_players['Position List'].apply(fits_needed)
+        ].sort_values(by='Combined Score', ascending=False).head(10)  # Top 10 picks
+
+        for _, player in best_picks.iterrows():
+            player_info = (
+                f"{player['Player']} | Team: {player['Team']} | Positions: {', '.join(player['Position List'])} | "
+                f"Combined Score: {player['Combined Score']:.2f}"
+            )
+            item = QListWidgetItem(player_info)
+            # Highlight the best pick
+            if _ == best_picks.index[0]:
+                item.setBackground(QBrush(QColor(255, 215, 0)))  # Gold color
+            self.best_picks_list.addItem(item)
+
+    def closeEvent(self, event):
+        """
+        Handle the event when the user attempts to close the application.
+        """
+        reply = QMessageBox.question(
+            self, 'Quit', 'Do you want to save the draft before exiting?',
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self.logic.save_draft_state()
+            event.accept()
+        elif reply == QMessageBox.No:
+            event.accept()
+        else:
+            event.ignore()
